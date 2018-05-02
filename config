@@ -1,0 +1,15 @@
+#[metabase_initial_setup_info]
+first_name="aman"
+last_name="malkar"
+email="amanmalkar@gmail.com"
+password="aman7030"
+site_name="MassMutual"
+
+#[ssl_cert_info]
+name="aman"
+business_unit="CX"
+organization="MassMutual"
+country="US"
+domain="metabase"
+storepass="aman7030"
+keypass="aman7030"
