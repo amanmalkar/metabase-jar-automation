@@ -1,0 +1,229 @@
+#--------------------- Phase 1: Setup Security Group for Postgres Instances & Boot ----------------------------------
+
+---
+- name: Create AWS resources
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  tasks:
+  - name: Create Db Security Group
+    ec2_group:
+      name: "Postgres-sec-grp"
+      description: "{{db_sec_grp}}"
+      region: "{{aws_region}}"
+      vpc_id: "{{vpc_id}}"
+      aws_access_key: "{{aws_access_key}}"
+      aws_secret_key: "{{aws_secret_key}}"
+      rules:
+        - proto: tcp
+          from_port: 22
+          to_port: 22
+          cidr_ip: 0.0.0.0/0
+        - proto: tcp
+          from_port: 5432
+          to_port: 5432
+          cidr_ip: 0.0.0.0/0
+      rules_egress:
+        - proto: all
+          cidr_ip: 0.0.0.0/0
+    register: db_firewall
+
+  - name: Create Db EC2 instances
+    ec2:
+      aws_access_key: "{{aws_access_key}}"
+      aws_secret_key: "{{aws_secret_key}}"
+      key_name: "{{key_name}}"
+      region: "{{aws_region}}"
+      group_id: "{{db_firewall.group_id}}"
+      instance_type: "{{instance_type}}"
+      image: "{{db_ami_id}}"
+      wait: yes
+      count: 2
+      instance_tags:
+        Name: postgress-db
+    register: ec2_db
+
+  - name: Create Db group for SSH
+    add_host:
+      hostname: "{{ item.public_ip }}"
+      groupname: dbServers
+      ansible_ssh_private_key_file: /Users/sensei/Downloads/ogMacKey.pem
+    with_items: "{{ ec2_db.instances }}"
+
+  - name: Wait to SSH
+    wait_for:
+      host: "{{ item.public_ip }}"
+      port: 22
+      state: started
+    with_items: "{{ ec2_db.instances }}"
+
+  - name: Sleep to help settle
+    pause:
+      seconds: 30
+
+#-------------------- Phase 2: Configure Launched Instances -----------------------------------
+
+- hosts: dbServers
+  become: yes
+  remote_user: ubuntu
+  gather_facts: false
+ 
+  pre_tasks:
+    - name: 'install python2'
+      raw: sudo apt -y update && sudo apt install -y python-minimal
+    - setup:
+
+  tasks:
+    - name: Install postgres modules
+      apt:
+        name: "{{ item }}"
+        update_cache: yes
+        state: latest
+      with_items:
+        - 'postgresql'
+        - 'postgresql-client'
+        - 'postgresql-contrib'
+
+#------------------ Phase 2a: Configure Postgres Master -----------------------
+
+    - name: Create Replication User
+      shell: |
+        sudo -u postgres bash -c "psql -c \"CREATE USER repuser REPLICATION LOGIN CONNECTION LIMIT 5 ENCRYPTED PASSWORD 'aman7030';\""
+        sudo -u postgres psql -U postgres -d postgres -c "alter user postgres with password 'aman7030';"
+        sudo mkdir -p ../../var/lib/postgresql/main/mnt/server/archivedir
+      run_once: true
+      
+    - name: Replace host incoming connection
+      replace:
+        dest: /etc/postgresql/9.5/main/pg_hba.conf
+        regexp: 'host    all             all             127.0.0.1/32            md5'
+        replace: 'host    all             all             0.0.0.0/0            md5'
+      become: yes
+
+    - name: Add replication user ip in conf
+      replace:
+        dest: /etc/postgresql/9.5/main/pg_hba.conf
+        regexp: '#host    replication     postgres        127.0.0.1/32            md5'
+        replace: 'host     replication     repuser        {{ groups["dbServers"][1] }}/32        md5'
+      run_once: true
+      become: yes
+  
+    - name: Open incoming connection
+      lineinfile:
+        path: /etc/postgresql/9.5/main/postgresql.conf
+        regexp: "listen_addresses = 'localhost'"
+        line: "listen_addresses = '*'"
+      become: yes
+
+    - name: Set wal_standby
+      lineinfile:
+        path: /etc/postgresql/9.5/main/postgresql.conf
+        regexp: "wal_level = minimal"
+        line: "wal_level = hot_standby"
+      become: yes
+      run_once: true
+        
+    - name: Set archive on
+      lineinfile:
+        path: /etc/postgresql/9.5/main/postgresql.conf
+        regexp: "archive_mode = off"
+        line: "archive_mode = on"
+      become: yes
+      run_once: true
+
+    - name: Set archive dir
+      lineinfile:
+        path: /etc/postgresql/9.5/main/postgresql.conf
+        regexp: "archive_command = ''"
+        line: "archive_command = 'test ! -f mnt/server/archivedir/%f && cp %p mnt/server/archivedir/%f'"
+      become: yes
+      run_once: true
+
+    - name: Set wal senders
+      lineinfile:
+        path: /etc/postgresql/9.5/main/postgresql.conf
+        regexp: "max_wal_senders = 0"
+        line: "max_wal_senders = 2"
+      become: yes
+      run_once: true 
+   
+    - name: Restart postgres master
+      service:
+        name: postgresql
+        state: restarted
+      become: yes
+      run_once: true
+
+#-------------- Phase 2b: Configure Postgres Slave----------------------------
+
+    - name: Stop postgres slave
+      service:
+        name: postgresql
+        state: stopped
+      delegate_to: "{{ groups['dbServers'][1] }}"
+      become: yes
+      run_once: true
+
+    - name: Create backup dir
+      command: sudo creates="../../var/lib/postgresql/9.5/main_old" mv ../../var/lib/postgresql/9.5/main ../../var/lib/postgresql/9.5/main_old removes="../../var/lib/postgresql/9.5/main"
+      delegate_to: "{{ groups['dbServers'][1] }}"
+      become: yes
+      run_once: true
+
+    - name: Install pexpect
+      apt:
+        name: python-pexpect
+        state: present
+      become: yes
+    
+    - name: Backup Utility
+      expect:
+        command: sudo -u postgres pg_basebackup -h "{{ groups['dbServers'][0] }}" -D /var/lib/postgresql/9.5/main -U repuser -v -P --xlog-method=stream
+        responses:
+          'Password': "aman7030"
+      delegate_to: "{{ groups['dbServers'][1] }}"
+      become: yes
+      run_once: true
+
+    - name: Turn on hot_standby in slave
+      lineinfile:
+        path: /etc/postgresql/9.5/main/postgresql.conf
+        regexp: "hot_standby = off"
+        line: "hot_standby = on"
+      become: yes
+      run_once: yes
+      delegate_to: "{{ groups['dbServers'][1] }}"
+     
+    - name: Copy recovery.conf
+      raw: sudo cp -avr ../../usr/share/postgresql/9.5/recovery.conf.sample /../../var/lib/postgresql/9.5/main/recovery.conf
+      become: yes
+      run_once: true
+      delegate_to: "{{ groups['dbServers'][1] }}"
+
+    - name: Turn on standby
+      lineinfile:
+        path: /var/lib/postgresql/9.5/main/recovery.conf
+        regexp: "standby_mode = off"
+        line: "standby_mode = on"
+      become: yes
+      run_user: true
+      delegate_to: "{{ groups['dbServers'][1] }}"
+ 
+    - name: Configure primary port
+      lineinfile:
+        path: /var/lib/postgresql/9.5/main/recovery.conf
+        regexp: "primary_conninfo ="
+        line: "primary_conninfo = 'host={{groups[\"dbServers\"][0] }} port=5432 user=repuser password=aman7030'"
+      become: yes
+      run_once: true
+      delegate_to: "{{ groups['dbServers'][1] }}"
+
+    - name: Start slave Postgres
+      service:
+        name: postgresql
+        state: started
+      become: yes
+      run_once: true
+      delegate_to: "{{ groups['dbServers'][1] }}"
+      

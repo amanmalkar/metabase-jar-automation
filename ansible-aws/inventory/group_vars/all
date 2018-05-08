@@ -1,0 +1,11 @@
+aws_access_key: AKIAIVBADNG2QU7V2Y4Q
+aws_secret_key: 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
+key_name: macKey
+aws_region: us-east-1
+vpc_id: vpc-9f5e02e4
+app_sec_grp: metabase-sec-grp
+db_sec_grp: postgres-sec-grp
+app_ami_id: ami-467ca739
+db_ami_id: ami-43a15f3e
+instance_type: t2.micro
+cidr_ip: 0.0.0.0/0
