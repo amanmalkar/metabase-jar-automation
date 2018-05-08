@@ -7,7 +7,7 @@ Edit the config file to suit your configuration.
 
 chmod +x setup.sh
 
-Run ./setup.sh
+Run ./setup.sh [logs will be in the same dir in a file called output.log]
 
 
 # To run 2-app 2-db isntances on aws
