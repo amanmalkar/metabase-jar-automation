@@ -33,7 +33,7 @@ done
 token=$(curl -s -X GET -H "Content-Type: application/json" http://localhost:3000/api/session/properties | python2.7 -c 'import sys, json; print json.load(sys.stdin)["setup_token"]' | tail -1)
 
 #Initial setup api
-curl -X POST -H "Content-Type: application/json" -d '{ "token": "'$token'", "user": {"first_name": "'$first_name'", "last_name": "'$last_name'", "email": "'$email'", "password": "'$password'"},"prefs": {"allow_tracking": false, "site_name": "'$site_name'"}}' http://localhost:3000/api/setup
+curl -X POST -H "Content-Type: application/json" -d '{ "token": "'$token'","database": {"name": "metabasedb", "engine": "postgres", "details": {"host": "localhost", "port": "5432", "dbname": "postgres", "user": "sensei", "password": "aman7030", "ssl": false}, "is_full_sync": true, "is_on_demand": false}, "user": {"first_name": "'$first_name'", "last_name": "'$last_name'", "email": "'$email'", "password": "'$password'"},"prefs": {"allow_tracking": false, "site_name": "'$site_name'"}}' http://localhost:3000/api/setup
 
 #generate self signed ssl certificate for https
 keytool -genkey -dname "cn="'$name'", ou="'$business_unit'", o="'$organization'",c="'$country'"" -alias "'$domain'" -storepass "'$storepass'" -keyalg RSA -keystore tempCert.jks -keysize 2048 -keypass "'$keypass'"
@@ -45,6 +45,13 @@ export MB_JETTY_SSL_Keystore_Password="'$storepass'"
 
 #restart metabase on https
 kill $Metabase_PID
+
+export MB_DB_TYPE=postgres
+export MB_DB_DBNAME=postgres
+export MB_DB_PORT=5432
+export MB_DB_USER=sensei
+export MB_DB_PASS=aman7030
+export MB_DB_HOST=localhost
 
 java -jar metabase.jar >> output.log 2>&1 &
 Metabase_PID=$!
